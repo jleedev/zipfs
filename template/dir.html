@@ -1,0 +1,16 @@
+<!doctype html>
+<meta name=viewport content="width=device-width">
+<style>
+    body { font-family: monospace }
+    li { white-space: pre-wrap }
+</style>
+
+<ol>
+    {{range . -}}
+        {{if .IsDir -}}
+            <li><a href="{{.Name}}/">{{.Name}}/</a></li>
+        {{- else -}}
+            <li><a href="{{.Name}}">{{.Name}}</a></li>
+        {{- end}}
+    {{end}}
+</ol>
