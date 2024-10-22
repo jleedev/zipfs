@@ -17,7 +17,7 @@ li {
     &:has(>.up)::marker { content: "🔙"; }
     &:has(>.folder)::marker { content: "📁"; }
     &:has(>.file)::marker { content: "📄"; }
-    &::marker { letter-spacing: 1ch; } }
+    &::before { content: " "; } }
 :any-link:not(:hover) { text-decoration: none; }
 </style>
 
