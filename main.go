@@ -15,9 +15,11 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path"
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 )
 
 //go:embed template/*
@@ -25,7 +27,10 @@ var static embed.FS
 
 var tmpl = template.Must(template.ParseFS(static, "template/*"))
 
-var name *string = flag.String("name", "", "input file path")
+var name *string = flag.String("name", "", "input file path path/to/some/archive.zip")
+var base *string = flag.String("base", "", "base directory in the archive")
+var prefix *string = flag.String("prefix", "", "url prefix to serve under")
+var index *string = flag.String("index", "index.html", "file to serve instead of directory listings")
 var listen *string = flag.String("listen", ":8080", "http listener")
 
 func main() {
@@ -35,12 +40,13 @@ func main() {
 		flag.Usage()
 		os.Exit(2)
 	}
+	slog.SetLogLoggerLevel(slog.LevelDebug)
 	slog.Info("opening archive", "name", *name)
 	rc, err := zip.OpenReader(*name)
 	if err != nil {
 		log.Fatal(err)
 	}
-	http.Handle("/", ZipFS(rc))
+	http.Handle("GET /", http.StripPrefix(*prefix, ZipFS(rc, *base)))
 
 	ln, err := net.Listen("tcp", *listen)
 	if err != nil {
@@ -54,13 +60,17 @@ func main() {
 // precompressed gzip encoding.
 type zipFS struct {
 	*zip.ReadCloser
+	base      string
 	mimeCache map[*zip.File]string
+	rw        sync.RWMutex
 }
 
-func ZipFS(z *zip.ReadCloser) *zipFS {
+func ZipFS(z *zip.ReadCloser, base string) *zipFS {
 	return &zipFS{
 		z,
+		base,
 		make(map[*zip.File]string),
+		sync.RWMutex{},
 	}
 }
 
@@ -72,7 +82,7 @@ type ZipEntry struct {
 // Finds the named File entry in the ZIP archive
 // Then do the dumb reflection work to pull out the underlying zip.File
 func (z *zipFS) Find(name string) (*ZipEntry, error) {
-	f, err := z.Open(name)
+	f, err := z.Open(path.Join(z.base, name))
 	if err != nil {
 		return nil, err
 	}
@@ -89,6 +99,7 @@ func (z *zipFS) Find(name string) (*ZipEntry, error) {
 func (z *zipFS) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// The URL always starts with a /, but z.Open doesn't want that
 	// It ends with a / if it's a directory, but z.Open doesn't want that either
+	slog.Debug("serving", "url", r.URL)
 	name := strings.Trim(r.URL.Path, "/")
 	if name == "" {
 		name = "."
@@ -120,7 +131,10 @@ func (z *zipFS) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		w.Header().Set("content-type", "text/html; charset=utf-8")
-		tmpl.ExecuteTemplate(w, "dir.html", entries)
+		tmpl.ExecuteTemplate(w, "dir.html", struct {
+			Path    string
+			Entries []fs.DirEntry
+		}{r.URL.Path, entries})
 	} else {
 		if entry.Entry == nil {
 			panic("impossible")
@@ -147,18 +161,24 @@ func (z *zipFS) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				uint32(entry.Entry.UncompressedSize64 % 0x1_0000_0000),
 			})
 		} else {
+			// Just serve a plain response
 			io.Copy(w, entry)
 		}
 	}
 }
 
 func (z *zipFS) GetMime(f *zip.File) string {
+	z.rw.RLock()
 	if x, ok := z.mimeCache[f]; ok {
+		z.rw.RUnlock()
 		return x
 	}
+	z.rw.RUnlock()
 	ctype := mime.TypeByExtension(filepath.Ext(f.Name))
 	if ctype != "" {
+		z.rw.Lock()
 		z.mimeCache[f] = ctype
+		z.rw.Unlock()
 		return ctype
 	}
 	r, err := f.Open()
@@ -169,6 +189,8 @@ func (z *zipFS) GetMime(f *zip.File) string {
 	var chunk [512]byte
 	n, _ := io.ReadFull(r, chunk[:])
 	ctype = http.DetectContentType(chunk[:n])
+	z.rw.Lock()
 	z.mimeCache[f] = ctype
+	z.rw.Unlock()
 	return ctype
 }
