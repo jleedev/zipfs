@@ -5,12 +5,18 @@
 <style>
 * { margin: unset; padding: unset; box-sizing: border-box; }
 html, body { height: 100%; }
-body { font-family: monospace; display: flex; flex-flow: column; padding: 1ch; }
+body {
+    font-family: monospace; display: flex;
+    flex-flow: column; padding: 1ch; }
 h1 { margin: 1ch 0; }
-ul { contain: size; flex: 1; display: flex; flex-flow: column wrap;
-     align-content: flex-start; gap: 1ch; }
-li { list-style-position: inside; text-underline-offset: 2px;
-    &:has(>.up)::marker { content: "🔙"; } &:has(>.folder)::marker { content: "📁"; } &:has(>.file)::marker { content: "📄"; }
+ul {
+    contain: size; flex: 1; display: flex; flex-flow: column wrap;
+    align-content: flex-start; gap: 1ch; }
+li {
+    list-style-position: inside; text-underline-offset: 2px;
+    &:has(>.up)::marker { content: "🔙"; }
+    &:has(>.folder)::marker { content: "📁"; }
+    &:has(>.file)::marker { content: "📄"; }
     &::marker { letter-spacing: 1ch; } }
 :any-link:not(:hover) { text-decoration: none; }
 </style>
