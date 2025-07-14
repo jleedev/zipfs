@@ -1,24 +1,30 @@
 <!doctype html><meta charset=utf-8>
 <meta name=viewport content="width=device-width">
 <meta name="color-scheme" content="light dark">
+<link rel=icon href=data:>
+<title>{{.Path}}</title>
 
 <style>
 * { margin: unset; padding: unset; box-sizing: border-box; }
 html, body { height: 100%; }
 body {
-    font-family: monospace; display: flex;
-    flex-flow: column; padding: 1ch; }
+  font-family: monospace; display: flex;
+  flex-flow: column; padding: 1ch; }
 h1 { margin: 1ch 0; }
 ul {
-    contain: size; flex: 1; display: flex; flex-flow: column wrap;
-    align-content: flex-start; gap: 1ch; }
+  contain: size; flex: 1; display: flex; flex-flow: column wrap;
+  align-content: flex-start; gap: 1ch; }
 li {
-    list-style-position: inside; text-underline-offset: 2px;
-    &:has(>.up)::marker { content: "🔙"; }
-    &:has(>.folder)::marker { content: "📁"; }
-    &:has(>.file)::marker { content: "📄"; }
-    &::before { content: " "; } }
+  list-style-position: inside; text-underline-offset: 2px;
+  &:has(>.up)::marker { content: "🔙"; }
+  &:has(>.folder)::marker { content: "📁"; }
+  &:has(>.file)::marker { content: "📄"; }
+  &::before { content: " "; } }
 :any-link:not(:hover) { text-decoration: none; }
+li:has(:any-link) {
+  position: relative;
+  :any-link::after { content: " "; position: absolute; inset: 0; }
+}
 </style>
 
 <h1>Listing of {{.Path}}</h1>
