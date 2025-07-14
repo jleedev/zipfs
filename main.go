@@ -18,6 +18,7 @@ import (
 	"path"
 	"path/filepath"
 	"reflect"
+	"runtime/debug"
 	"strings"
 	"sync"
 )
@@ -27,7 +28,6 @@ var static embed.FS
 
 var tmpl = template.Must(template.ParseFS(static, "template/*"))
 
-var name *string = flag.String("name", "", "input file path path/to/some/archive.zip")
 var base *string = flag.String("base", "", "base directory in the archive")
 var prefix *string = flag.String("prefix", "", "url prefix to serve under")
 var index *string = flag.String("index", "index.html", "file to serve instead of directory listings")
@@ -36,13 +36,18 @@ var listen *string = flag.String("listen", ":8080", "http listener")
 func main() {
 	log.SetFlags(log.Ldate | log.Lmicroseconds | log.Lshortfile)
 	flag.Parse()
-	if *name == "" {
-		flag.Usage()
+	slog.SetLogLoggerLevel(slog.LevelDebug)
+	if len(flag.Args()) != 1 {
+		fmt.Fprintf(flag.CommandLine.Output(), "Usage: %s <archive.zip>\n", os.Args[0])
+		flag.PrintDefaults()
 		os.Exit(2)
 	}
-	slog.SetLogLoggerLevel(slog.LevelDebug)
-	slog.Info("opening archive", "name", *name)
-	rc, err := zip.OpenReader(*name)
+	if info, ok := debug.ReadBuildInfo(); ok {
+		slog.Info("hello", "Main", info.Main)
+	}
+	name := flag.Args()[0]
+	slog.Info("opening archive", "name", name)
+	rc, err := zip.OpenReader(name)
 	if err != nil {
 		log.Fatal(err)
 	}
