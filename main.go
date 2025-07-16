@@ -38,7 +38,7 @@ func main() {
 	flag.Parse()
 	slog.SetLogLoggerLevel(slog.LevelDebug)
 	if len(flag.Args()) != 1 {
-		fmt.Fprintf(flag.CommandLine.Output(), "Usage: %s <archive.zip>\n", os.Args[0])
+		fmt.Fprintf(flag.CommandLine.Output(), "Usage: %s [flags] <archive.zip>\n", os.Args[0])
 		flag.PrintDefaults()
 		os.Exit(2)
 	}
