@@ -32,11 +32,23 @@ var base *string = flag.String("base", "", "base directory in the archive")
 var prefix *string = flag.String("prefix", "", "url prefix to serve under")
 var index *string = flag.String("index", "index.html", "file to serve instead of directory listings")
 var listen *string = flag.String("listen", ":8080", "http listener")
+var version *bool = flag.Bool("version", false, "print program version")
 
 func main() {
 	log.SetFlags(log.Ldate | log.Lmicroseconds | log.Lshortfile)
+
+
 	flag.Parse()
 	slog.SetLogLoggerLevel(slog.LevelDebug)
+	if *version {
+		info, ok := debug.ReadBuildInfo()
+		fmt.Println(info)
+		if ok {
+			os.Exit(0)
+		} else {
+			os.Exit(1)
+		}
+	}
 	if len(flag.Args()) != 1 {
 		fmt.Fprintf(flag.CommandLine.Output(), "Usage: %s [flags] <archive.zip>\n", os.Args[0])
 		flag.PrintDefaults()
@@ -57,7 +69,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	slog.Info("listening on", "listen", ln.Addr())
+	slog.Info("listening on", "listen", fmt.Sprint("http://", ln.Addr()))
 	panic(http.Serve(ln, nil))
 }
 
@@ -104,7 +116,7 @@ func (z *zipFS) Find(name string) (*ZipEntry, error) {
 func (z *zipFS) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// The URL always starts with a /, but z.Open doesn't want that
 	// It ends with a / if it's a directory, but z.Open doesn't want that either
-	slog.Debug("serving", "url", r.URL)
+	slog.DebugContext(r.Context(), "serving", "url", r.URL)
 	name := strings.Trim(r.URL.Path, "/")
 	if name == "" {
 		name = "."
