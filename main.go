@@ -12,80 +12,99 @@ import (
 	"log"
 	"log/slog"
 	"mime"
-	"net"
 	"net/http"
-	"os"
-	"path"
+	"net/http/fcgi"
 	"path/filepath"
 	"reflect"
 	"runtime/debug"
 	"strings"
 	"sync"
+
+	"blitiri.com.ar/go/systemd"
 )
 
 //go:embed template/*
 var static embed.FS
 
+var index *string = flag.String("index", "", "serve <index.html> instead of directory listing")
+
 var tmpl = template.Must(template.ParseFS(static, "template/*"))
 
-var base *string = flag.String("base", "", "base directory in the archive")
-var prefix *string = flag.String("prefix", "", "url prefix to serve under")
-var index *string = flag.String("index", "index.html", "file to serve instead of directory listings")
-var listen *string = flag.String("listen", ":8080", "http listener")
-var version *bool = flag.Bool("version", false, "print program version")
-
 func main() {
-	log.SetFlags(log.Ldate | log.Lmicroseconds | log.Lshortfile)
-
-
 	flag.Parse()
+	log.SetFlags(log.Ldate | log.Lmicroseconds | log.Lshortfile)
 	slog.SetLogLoggerLevel(slog.LevelDebug)
-	if *version {
-		info, ok := debug.ReadBuildInfo()
-		fmt.Println(info)
-		if ok {
-			os.Exit(0)
-		} else {
-			os.Exit(1)
-		}
-	}
-	if len(flag.Args()) != 1 {
-		fmt.Fprintf(flag.CommandLine.Output(), "Usage: %s [flags] <archive.zip>\n", os.Args[0])
-		flag.PrintDefaults()
-		os.Exit(2)
-	}
-	if info, ok := debug.ReadBuildInfo(); ok {
-		slog.Info("hello", "Main", info.Main)
-	}
-	name := flag.Args()[0]
-	slog.Info("opening archive", "name", name)
-	rc, err := zip.OpenReader(name)
-	if err != nil {
-		log.Fatal(err)
-	}
-	http.Handle("GET /", http.StripPrefix(*prefix, ZipFS(rc, *base)))
+	info, _ := debug.ReadBuildInfo()
+	log.Printf("%#v", info.Main)
 
-	ln, err := net.Listen("tcp", *listen)
+	http.Handle("GET /", NewZipServer())
+
+	l, err := systemd.OneListener("")
 	if err != nil {
-		log.Fatal(err)
+		log.Fatal("While attempting socket activation: ", err)
 	}
-	slog.Info("listening on", "listen", fmt.Sprint("http://", ln.Addr()))
-	panic(http.Serve(ln, nil))
+	slog.Info("listening on", "listen", fmt.Sprint("http://", l.Addr()))
+	panic(fcgi.Serve(l, nil))
+}
+
+func NewZipServer() *ZipServer {
+	return &ZipServer{
+		archives: make(map[string]*zipFS),
+	}
+}
+
+type ZipServer struct {
+	archives map[string]*zipFS
+	rw       sync.RWMutex
+}
+
+func (z *ZipServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	slog.InfoContext(r.Context(), "begin")
+	env := fcgi.ProcessEnv(r)
+
+	path_to_zipfile := env["SCRIPT_FILENAME"]
+	z.rw.RLock()
+	var zf *zipFS
+	var ok bool
+	if zf, ok = z.archives[path_to_zipfile]; ok {
+		z.rw.RUnlock()
+	} else {
+		z.rw.RUnlock()
+		rc, err := zip.OpenReader(path_to_zipfile)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		zf = newZipFS(rc)
+		z.rw.Lock()
+		z.archives[path_to_zipfile] = zf
+		z.rw.Unlock()
+	}
+
+	path := strings.Trim(env["PATH_TRANSLATED"], "/")
+	if path == "" {
+		path = "."
+	}
+	entry, err := zf.Find(path)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer entry.Close()
+	RespondWith(zf, entry, w, r)
 }
 
 // Wrapper around the zip file which provides HTTP serving with
 // precompressed gzip encoding.
 type zipFS struct {
 	*zip.ReadCloser
-	base      string
 	mimeCache map[*zip.File]string
 	rw        sync.RWMutex
 }
 
-func ZipFS(z *zip.ReadCloser, base string) *zipFS {
+func newZipFS(z *zip.ReadCloser) *zipFS {
 	return &zipFS{
 		z,
-		base,
 		make(map[*zip.File]string),
 		sync.RWMutex{},
 	}
@@ -99,7 +118,7 @@ type ZipEntry struct {
 // Finds the named File entry in the ZIP archive
 // Then do the dumb reflection work to pull out the underlying zip.File
 func (z *zipFS) Find(name string) (*ZipEntry, error) {
-	f, err := z.Open(path.Join(z.base, name))
+	f, err := z.Open(name)
 	if err != nil {
 		return nil, err
 	}
@@ -113,21 +132,7 @@ func (z *zipFS) Find(name string) (*ZipEntry, error) {
 	return &ZipEntry{f, entry}, nil
 }
 
-func (z *zipFS) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	// The URL always starts with a /, but z.Open doesn't want that
-	// It ends with a / if it's a directory, but z.Open doesn't want that either
-	slog.DebugContext(r.Context(), "serving", "url", r.URL)
-	name := strings.Trim(r.URL.Path, "/")
-	if name == "" {
-		name = "."
-	}
-	entry, err := z.Find(name)
-	if err != nil {
-		http.NotFound(w, r)
-		return
-	}
-	defer entry.Close()
-
+func RespondWith(z *zipFS, entry *ZipEntry, w http.ResponseWriter, r *http.Request) {
 	if entry.Entry != nil {
 		w.Header().Set("Last-Modified", entry.Entry.Modified.Format(http.TimeFormat))
 	}
