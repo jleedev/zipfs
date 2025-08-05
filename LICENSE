@@ -1,1 +1,1 @@
-WTFPL
+echo 'echo wtfpl >LICENSE' >LICENSE
