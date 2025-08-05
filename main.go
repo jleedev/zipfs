@@ -26,7 +26,8 @@ import (
 //go:embed template/*
 var static embed.FS
 
-var index *string = flag.String("index", "", "serve <index.html> instead of directory listing")
+var index *string = flag.String("index", "", "serve <index.html> if present")
+var browse *bool = flag.Bool("browse", true, "serve directory listings")
 
 var tmpl = template.Must(template.ParseFS(static, "template/*"))
 
@@ -37,14 +38,12 @@ func main() {
 	info, _ := debug.ReadBuildInfo()
 	log.Printf("%#v", info.Main)
 
-	http.Handle("GET /", NewZipServer())
-
 	l, err := systemd.OneListener("")
 	if err != nil {
-		log.Fatal("While attempting socket activation: ", err)
+		log.Fatal("Socket activation failed: ", err)
 	}
-	slog.Info("listening on", "listen", fmt.Sprint("http://", l.Addr()))
-	panic(fcgi.Serve(l, nil))
+	slog.Info("Listening", "network", l.Addr().Network(), "addr", l.Addr())
+	panic(fcgi.Serve(l, NewZipServer()))
 }
 
 func NewZipServer() *ZipServer {
@@ -58,27 +57,32 @@ type ZipServer struct {
 	rw       sync.RWMutex
 }
 
-func (z *ZipServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	slog.InfoContext(r.Context(), "begin")
-	env := fcgi.ProcessEnv(r)
-
-	path_to_zipfile := env["SCRIPT_FILENAME"]
+func (z *ZipServer) getArchive(path string) (zf *zipFS, err error) {
 	z.rw.RLock()
-	var zf *zipFS
 	var ok bool
-	if zf, ok = z.archives[path_to_zipfile]; ok {
+	if zf, ok = z.archives[path]; ok {
 		z.rw.RUnlock()
 	} else {
 		z.rw.RUnlock()
-		rc, err := zip.OpenReader(path_to_zipfile)
+		var rc *zip.ReadCloser
+		rc, err = zip.OpenReader(path)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 		zf = newZipFS(rc)
 		z.rw.Lock()
-		z.archives[path_to_zipfile] = zf
+		z.archives[path] = zf
 		z.rw.Unlock()
+	}
+	return
+}
+
+func (z *ZipServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	env := fcgi.ProcessEnv(r)
+	zf, err := z.getArchive(env["SCRIPT_FILENAME"])
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
 	}
 
 	path := strings.Trim(env["PATH_TRANSLATED"], "/")
