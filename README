@@ -1,0 +1,40 @@
+Write your Caddyfile:
+
+    root /whatever
+    @zip path *.zip/*
+    reverse_proxy @zip {
+        to unix/@zipfs
+        transport fastcgi {
+            split .zip
+        }
+    }
+    file_server {
+        browse
+        precompressed
+    }
+
+Build and install
+
+```sh
+go install
+install ~/.asdf/installs/golang/1.24.5/packages/bin/zipfs ~/bin/ 
+```
+
+Do `systemctl --user edit --full --force zipfs.socket`
+
+    [Socket]
+    ListenStream=@zipfs
+
+    [Install]
+    WantedBy=sockets.target
+
+Do `systemctl --user edit --full --force zipfs.service`
+
+    [Service]
+    ExecStart=/home/josh/bin/zipfs --index=index.html
+
+Fire it up
+
+    systemctl --user enable zipfs.socket
+    systemctl --user start zipfs.socket
+

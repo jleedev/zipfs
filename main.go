@@ -39,13 +39,19 @@ func main() {
 	info, _ := debug.ReadBuildInfo()
 	log.Printf("%#v", info.Main)
 
-	l, err := systemd.OneListener("")
+	http.Handle("GET /", NewZipServer())
+
+	listeners, err := systemd.Listeners()
 	if err != nil {
 		log.Fatal("Socket activation failed: ", err)
 	}
-	slog.Info("Listening", "network", l.Addr().Network(), "addr", l.Addr())
-	http.Handle("GET /", NewZipServer())
-	log.Fatal(fcgi.Serve(l, nil))
+	for name, ls := range listeners {
+		for _, l := range ls {
+			slog.Info("Listening", "name", name, "network", l.Addr().Network(), "addr", l.Addr())
+			log.Fatal(fcgi.Serve(l, nil))
+		}
+	}
+	log.Fatal("No socket activation")
 }
 
 func NewZipServer() *ZipServer {
