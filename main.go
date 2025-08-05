@@ -97,7 +97,10 @@ func (z *ZipServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	orig_path := env["PATH_TRANSLATED"]
+	orig_path := strings.TrimPrefix(env["PATH_TRANSLATED"], env["DOCUMENT_ROOT"])
+	if orig_path == "" {
+		orig_path = "/"
+	}
 	p := strings.Trim(orig_path, "/")
 	if p == "" {
 		p = "."
