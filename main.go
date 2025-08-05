@@ -14,6 +14,7 @@ import (
 	"mime"
 	"net/http"
 	"net/http/fcgi"
+	"path"
 	"path/filepath"
 	"reflect"
 	"runtime/debug"
@@ -49,31 +50,34 @@ func main() {
 func NewZipServer() *ZipServer {
 	return &ZipServer{
 		archives: make(map[string]*zipFS),
+		index:    *index,
+		browse:   *browse,
 	}
 }
 
 type ZipServer struct {
 	archives map[string]*zipFS
 	rw       sync.RWMutex
+	index    string
+	browse   bool
 }
 
 func (z *ZipServer) getArchive(path string) (zf *zipFS, err error) {
 	z.rw.RLock()
-	var ok bool
-	if zf, ok = z.archives[path]; ok {
-		z.rw.RUnlock()
-	} else {
-		z.rw.RUnlock()
-		var rc *zip.ReadCloser
-		rc, err = zip.OpenReader(path)
-		if err != nil {
-			return
-		}
-		zf = newZipFS(rc)
-		z.rw.Lock()
-		z.archives[path] = zf
-		z.rw.Unlock()
+	zf = z.archives[path]
+	z.rw.RUnlock()
+	if zf != nil {
+		return
 	}
+	var rc *zip.ReadCloser
+	rc, err = zip.OpenReader(path)
+	if err != nil {
+		return
+	}
+	zf = newZipFS(rc)
+	z.rw.Lock()
+	z.archives[path] = zf
+	z.rw.Unlock()
 	return
 }
 
@@ -81,21 +85,58 @@ func (z *ZipServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	env := fcgi.ProcessEnv(r)
 	zf, err := z.getArchive(env["SCRIPT_FILENAME"])
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		http.Error(w, err.Error(), http.StatusNotFound)
 		return
 	}
 
-	path := strings.Trim(env["PATH_TRANSLATED"], "/")
-	if path == "" {
-		path = "."
+	orig_path := env["PATH_TRANSLATED"]
+
+	p := strings.Trim(orig_path, "/")
+	if p == "" {
+		p = "."
 	}
-	entry, err := zf.Find(path)
+	entry, err := FindRaw(&zf.Reader, p)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		http.Error(w, err.Error(), http.StatusNotFound)
 		return
 	}
 	defer entry.Close()
-	RespondWith(zf, entry, w, r)
+
+	_, is_read_dir_file := entry.File.(fs.ReadDirFile)
+
+	if strings.HasSuffix(orig_path, "/") && z.index != "" {
+		if is_read_dir_file {
+			// See if there's an index.html
+			index_entry, err := FindRaw(&zf.Reader, path.Join(p, z.index))
+			if err != nil {
+				// Guess not
+			} else {
+				defer index_entry.Close()
+				SendFile(zf, index_entry, w, r)
+				return
+			}
+		}
+	}
+
+	if is_read_dir_file && !strings.HasSuffix(orig_path, "/") {
+		// Canonicalize directory with a trailing slash
+		http.Redirect(w, r, r.URL.Path+"/", http.StatusMovedPermanently)
+		return
+	}
+
+	if strings.HasSuffix(orig_path, "/") && !is_read_dir_file {
+		// We already handled index.html above, so this is an erroneous
+		// trailing slash
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+
+	// At this point, both the request url and the zip entry agree
+	if is_read_dir_file {
+		SendDirectory(zf, entry, w, r)
+	} else {
+		SendFile(zf, entry, w, r)
+	}
 }
 
 // Wrapper around the zip file which provides HTTP serving with
@@ -121,7 +162,9 @@ type ZipEntry struct {
 
 // Finds the named File entry in the ZIP archive
 // Then do the dumb reflection work to pull out the underlying zip.File
-func (z *zipFS) Find(name string) (*ZipEntry, error) {
+// This is necessary because zip doesn't have OpenRaw(name string)
+// and it's easier than processing the flat list of files myself
+func FindRaw(z *zip.Reader, name string) (*ZipEntry, error) {
 	f, err := z.Open(name)
 	if err != nil {
 		return nil, err
@@ -136,61 +179,54 @@ func (z *zipFS) Find(name string) (*ZipEntry, error) {
 	return &ZipEntry{f, entry}, nil
 }
 
-func RespondWith(z *zipFS, entry *ZipEntry, w http.ResponseWriter, r *http.Request) {
+func SendDirectory(z *zipFS, entry *ZipEntry, w http.ResponseWriter, r *http.Request) {
 	if entry.Entry != nil {
+		// Could be a phantom directory, in particular the root directory
 		w.Header().Set("Last-Modified", entry.Entry.Modified.Format(http.TimeFormat))
 	}
-
-	// If index.html handling is enabled:
-	// - When reading a directory, see if you want to read index.html instead
-	// - When reading index.html, redirect to the directory
-
-	if rd, ok := entry.File.(fs.ReadDirFile); ok {
-		if !strings.HasSuffix(r.URL.Path, "/") {
-			http.Redirect(w, r, r.URL.Path+"/", http.StatusMovedPermanently)
-			return
-		}
-		// Serve the directory listing
-		entries, err := rd.ReadDir(-1)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		w.Header().Set("content-type", "text/html; charset=utf-8")
-		tmpl.ExecuteTemplate(w, "dir.html", struct {
-			Path    string
-			Entries []fs.DirEntry
-		}{r.URL.Path, entries})
-	} else {
-		if entry.Entry == nil {
-			panic("impossible")
-		}
-		w.Header().Set("Content-Type", z.GetMime(entry.Entry))
-		if entry.Entry.Method == zip.Deflate && strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") {
-			// The entry is compressed and we're ready to serve up some gzip
-			w.Header().Set("Content-Encoding", "gzip")
-
-			fmt.Fprint(w, "\x1f\x8b\x08\x00")
-			mtime := entry.Entry.Modified.Unix()
-			binary.Write(w, binary.LittleEndian, uint32(mtime))
-			fmt.Fprint(w, "\x00\xff")
-
-			src, err := entry.Entry.OpenRaw()
-			if err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-				return
-			}
-			io.Copy(w, src)
-
-			binary.Write(w, binary.LittleEndian, []uint32{
-				entry.Entry.CRC32,
-				uint32(entry.Entry.UncompressedSize64 % 0x1_0000_0000),
-			})
-		} else {
-			// Just serve a plain response
-			io.Copy(w, entry)
-		}
+	// Serve the directory listing
+	rd := entry.File.(fs.ReadDirFile)
+	entries, err := rd.ReadDir(-1)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
 	}
+	w.Header().Set("content-type", "text/html; charset=utf-8")
+	tmpl.ExecuteTemplate(w, "dir.html", struct {
+		Path    string
+		Entries []fs.DirEntry
+	}{r.URL.Path, entries})
+}
+
+func SendFile(z *zipFS, entry *ZipEntry, w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Last-Modified", entry.Entry.Modified.Format(http.TimeFormat))
+	w.Header().Set("Content-Type", z.GetMime(entry.Entry))
+
+	if !(entry.Entry.Method == zip.Deflate && strings.Contains(r.Header.Get("Accept-Encoding"), "gzip")) {
+		// Just serve a plain response
+		io.Copy(w, entry)
+		return
+	}
+
+	// The entry is compressed and we're ready to serve up some gzip
+	w.Header().Set("Content-Encoding", "gzip")
+
+	fmt.Fprint(w, "\x1f\x8b\x08\x00")
+	mtime := entry.Entry.Modified.Unix()
+	binary.Write(w, binary.LittleEndian, uint32(mtime))
+	fmt.Fprint(w, "\x00\xff")
+
+	src, err := entry.Entry.OpenRaw()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	io.Copy(w, src)
+
+	binary.Write(w, binary.LittleEndian, []uint32{
+		entry.Entry.CRC32,
+		uint32(entry.Entry.UncompressedSize64 % 0x1_0000_0000),
+	})
 }
 
 func (z *zipFS) GetMime(f *zip.File) string {
