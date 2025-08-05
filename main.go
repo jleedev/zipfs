@@ -44,7 +44,8 @@ func main() {
 		log.Fatal("Socket activation failed: ", err)
 	}
 	slog.Info("Listening", "network", l.Addr().Network(), "addr", l.Addr())
-	panic(fcgi.Serve(l, NewZipServer()))
+	http.Handle("GET /", NewZipServer())
+	log.Fatal(fcgi.Serve(l, nil))
 }
 
 func NewZipServer() *ZipServer {
@@ -55,6 +56,7 @@ func NewZipServer() *ZipServer {
 	}
 }
 
+// Files are kept open forever. This will probably crash if a file is altered on disk. Working as intended.
 type ZipServer struct {
 	archives map[string]*zipFS
 	rw       sync.RWMutex
@@ -90,11 +92,11 @@ func (z *ZipServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	orig_path := env["PATH_TRANSLATED"]
-
 	p := strings.Trim(orig_path, "/")
 	if p == "" {
 		p = "."
 	}
+
 	entry, err := FindRaw(&zf.Reader, p)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusNotFound)
@@ -102,10 +104,9 @@ func (z *ZipServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	defer entry.Close()
 
-	_, is_read_dir_file := entry.File.(fs.ReadDirFile)
-
+	_, is_dir := entry.File.(fs.ReadDirFile)
 	if strings.HasSuffix(orig_path, "/") && z.index != "" {
-		if is_read_dir_file {
+		if is_dir {
 			// See if there's an index.html
 			index_entry, err := FindRaw(&zf.Reader, path.Join(p, z.index))
 			if err != nil {
@@ -118,13 +119,13 @@ func (z *ZipServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if is_read_dir_file && !strings.HasSuffix(orig_path, "/") {
+	if is_dir && !strings.HasSuffix(orig_path, "/") {
 		// Canonicalize directory with a trailing slash
 		http.Redirect(w, r, r.URL.Path+"/", http.StatusMovedPermanently)
 		return
 	}
 
-	if strings.HasSuffix(orig_path, "/") && !is_read_dir_file {
+	if strings.HasSuffix(orig_path, "/") && !is_dir {
 		// We already handled index.html above, so this is an erroneous
 		// trailing slash
 		http.Error(w, "not found", http.StatusNotFound)
@@ -132,15 +133,14 @@ func (z *ZipServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// At this point, both the request url and the zip entry agree
-	if is_read_dir_file {
+	if is_dir {
 		SendDirectory(zf, entry, w, r)
 	} else {
 		SendFile(zf, entry, w, r)
 	}
 }
 
-// Wrapper around the zip file which provides HTTP serving with
-// precompressed gzip encoding.
+// Serves files from a single zip file
 type zipFS struct {
 	*zip.ReadCloser
 	mimeCache map[*zip.File]string
@@ -155,6 +155,10 @@ func newZipFS(z *zip.ReadCloser) *zipFS {
 	}
 }
 
+// Wrapper for the result of opening the path and then sneaking
+// around to find the corresponding raw entry
+// Entry may be nil if it's the root (or another nonexistent directory),
+// but never if it's a file
 type ZipEntry struct {
 	fs.File
 	Entry *zip.File
@@ -181,7 +185,6 @@ func FindRaw(z *zip.Reader, name string) (*ZipEntry, error) {
 
 func SendDirectory(z *zipFS, entry *ZipEntry, w http.ResponseWriter, r *http.Request) {
 	if entry.Entry != nil {
-		// Could be a phantom directory, in particular the root directory
 		w.Header().Set("Last-Modified", entry.Entry.Modified.Format(http.TimeFormat))
 	}
 	// Serve the directory listing
