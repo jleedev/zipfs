@@ -12,12 +12,15 @@ import (
 	"log"
 	"log/slog"
 	"mime"
+	"net"
+	"os"
 	"net/http"
 	"net/http/fcgi"
 	"path"
 	"path/filepath"
 	"reflect"
 	"runtime/debug"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -29,6 +32,7 @@ var static embed.FS
 
 var index *string = flag.String("index", "", "serve <index.html> if present")
 var browse *bool = flag.Bool("browse", true, "serve directory listings")
+var server_info string
 
 var tmpl = template.Must(template.ParseFS(static, "template/*"))
 
@@ -38,6 +42,7 @@ func main() {
 	slog.SetLogLoggerLevel(slog.LevelDebug)
 	info, _ := debug.ReadBuildInfo()
 	log.Printf("%#v", info.Main)
+	server_info = fmt.Sprint(info.Main.Path, "@", info.Main.Version)
 
 	http.Handle("GET /", NewZipServer())
 
@@ -47,27 +52,37 @@ func main() {
 	}
 	for name, ls := range listeners {
 		for _, l := range ls {
-			slog.Info("Listening", "name", name, "network", l.Addr().Network(), "addr", l.Addr())
+			slog.Info("Socket activated: serving FastCGI on", "name", name, "network", l.Addr().Network(), "addr", l.Addr())
 			log.Fatal(fcgi.Serve(l, nil))
 		}
 	}
-	log.Fatal("No socket activation")
+	// Else
+	port_str := os.Getenv("PORT")
+	port, _ := strconv.Atoi(port_str)
+	l, err := net.Listen("tcp", fmt.Sprint(":", port))
+	if err != nil {
+		log.Fatal(err)
+	}
+	slog.Info("Serving HTTP on", "network", l.Addr().Network(), "addr", l.Addr())
+	log.Fatal(http.Serve(l, nil))
 }
 
 func NewZipServer() *ZipServer {
 	return &ZipServer{
-		archives: make(map[string]*zipFS),
-		index:    *index,
-		browse:   *browse,
+		archives:    make(map[string]*zipFS),
+		index:       *index,
+		browse:      *browse,
+		server_info: server_info,
 	}
 }
 
 // Files are kept open forever. This will probably crash if a file is altered on disk. Working as intended.
 type ZipServer struct {
-	archives map[string]*zipFS
-	rw       sync.RWMutex
-	index    string
-	browse   bool
+	archives    map[string]*zipFS
+	rw          sync.RWMutex
+	index       string
+	browse      bool
+	server_info string
 }
 
 func (z *ZipServer) getArchive(path string) (zf *zipFS, err error) {
@@ -90,6 +105,7 @@ func (z *ZipServer) getArchive(path string) (zf *zipFS, err error) {
 }
 
 func (z *ZipServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Server", z.server_info)
 	env := fcgi.ProcessEnv(r)
 	zf, err := z.getArchive(env["SCRIPT_FILENAME"])
 	if err != nil {
