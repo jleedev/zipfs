@@ -108,16 +108,21 @@ func (z *ZipServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Server", z.server_info)
 	env := fcgi.ProcessEnv(r)
 
+	// Shenanigans
+	orig_path := env["PATH_TRANSLATED"]
+	if orig_path != "" {
+		orig_path = strings.TrimPrefix(orig_path, env["DOCUMENT_ROOT"])
+		if orig_path == "" {
+			orig_path = "/"
+		}
+	}
+
 	zf, err := z.getArchive(env["SCRIPT_FILENAME"])
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
 	}
 
-	orig_path := strings.TrimPrefix(env["PATH_TRANSLATED"], env["DOCUMENT_ROOT"])
-	if orig_path == "" {
-		orig_path = "/"
-	}
 	p := strings.Trim(orig_path, "/")
 	if p == "" {
 		p = "."
@@ -131,7 +136,7 @@ func (z *ZipServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer entry.Close()
 
 	_, is_dir := entry.File.(fs.ReadDirFile)
-	if strings.HasSuffix(orig_path, "/") && z.index != "" {
+	if (orig_path == "" || strings.HasSuffix(orig_path, "/")) && z.index != "" {
 		if is_dir {
 			// See if there's an index.html
 			index_entry, err := FindRaw(&zf.Reader, path.Join(p, z.index))

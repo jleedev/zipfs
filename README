@@ -4,7 +4,10 @@ for HTTP listener (currently broken).
 Write your Caddyfile:
 
     root /whatever
-    @zip path *.zip/*
+    @zip {
+        path *.zip/*
+        path *.zip
+    }
     reverse_proxy @zip {
         to unix/@zipfs
         transport fastcgi {
