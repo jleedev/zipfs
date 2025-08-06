@@ -13,9 +13,9 @@ import (
 	"log/slog"
 	"mime"
 	"net"
-	"os"
 	"net/http"
 	"net/http/fcgi"
+	"os"
 	"path"
 	"path/filepath"
 	"reflect"
@@ -58,7 +58,7 @@ func main() {
 	}
 	// Else
 	port_str := os.Getenv("PORT")
-	port, _ := strconv.Atoi(port_str)
+	port, _ := strconv.ParseUint(port_str, 10, 16)
 	l, err := net.Listen("tcp", fmt.Sprint(":", port))
 	if err != nil {
 		log.Fatal(err)
@@ -107,6 +107,7 @@ func (z *ZipServer) getArchive(path string) (zf *zipFS, err error) {
 func (z *ZipServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Server", z.server_info)
 	env := fcgi.ProcessEnv(r)
+
 	zf, err := z.getArchive(env["SCRIPT_FILENAME"])
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusNotFound)

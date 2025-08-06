@@ -1,3 +1,6 @@
+Launch me with systemd socket activation for FastCGI, or else set $PORT
+for HTTP listener (currently broken).
+
 Write your Caddyfile:
 
     root /whatever
@@ -13,14 +16,21 @@ Write your Caddyfile:
         precompressed
     }
 
-Build and install
+You might think that the file_server directive is entirely unrelated to this
+server, that it just seems like a good idea to configure them with the same
+document root, but actually you need it so script_filename is correct.
 
-```sh
-go install
-install ~/.asdf/installs/golang/1.24.5/packages/bin/zipfs ~/bin/ 
-```
+Some zip files (looking at you, duckdb-docs) include absolute URLs and expect
+to be unpacked and then served at a root. In this case you can't rely on
+fastcgi to split on .zip. Maybe configure the HTTP listener to add and remove
+a custom prefix.
 
-Do `systemctl --user edit --full --force zipfs.socket`
+Build and install:
+
+    go install
+    install ~/.asdf/installs/golang/1.24.5/packages/bin/zipfs ~/bin/ 
+
+Do `systemctl --user edit --full --force zipfs.socket`:
 
     [Socket]
     ListenStream=@zipfs
@@ -28,12 +38,12 @@ Do `systemctl --user edit --full --force zipfs.socket`
     [Install]
     WantedBy=sockets.target
 
-Do `systemctl --user edit --full --force zipfs.service`
+Do `systemctl --user edit --full --force zipfs.service`:
 
     [Service]
     ExecStart=/home/josh/bin/zipfs --index=index.html
 
-Fire it up
+Fire it up:
 
     systemctl --user enable zipfs.socket
     systemctl --user start zipfs.socket
